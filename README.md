@@ -27,9 +27,15 @@ Put **both** files in `models/text_encoders/`:
 - the text encoder, e.g. `qwen3vl_8b_heretic-Q4_K_M.gguf`
 - its vision tower, whose name contains the text encoder's name, e.g. `mmproj-qwen3vl_8b_heretic-f16.gguf`
 
+Don't rename them — the mmproj is found by name. If it is missing, loading stops with a
+`Missing vision tower` error that names the file to download.
+
 Then: `CLIPLoaderGGUF` (type **`qwen_image`**) → `TextEncodeQwenImage21` → the rest of the official
 Qwen-Image-2.1 workflow. On startup the console shows
 `[GGUF-Qwen3VL-TE] ComfyUI-GGUF patched for qwen3vl text encoders.`
+
+The vision tower is used for real, not only to get past the loader: `TextEncodeQwenImage21`'s
+reference images (image editing) go through it. Both text-to-image and editing were tested.
 
 ## Why it breaks
 
@@ -48,8 +54,9 @@ its tensors to ComfyUI's Qwen3-VL layout:
 | `v.patch_embd` / `v.position_embd` | `model.visual.patch_embed.proj` / `model.visual.pos_embed` |
 
 Tested with ComfyUI 0.36.0 + ComfyUI-GGUF `6ea2651`: all 750 keys match the official
-bf16 safetensors text encoder, the vision tensors match it numerically, and Qwen-Image-2.1 generates
-normally. Once ComfyUI-GGUF supports qwen3vl itself, this add-on detects it and does nothing.
+bf16 safetensors text encoder, the vision tensors match it numerically, and Qwen-Image-2.1
+text-to-image and reference-image editing match the bf16 encoder's output for the same seed up to
+Q4 quantization noise. Once ComfyUI-GGUF supports qwen3vl itself, this add-on detects it and does nothing.
 
 ## License
 

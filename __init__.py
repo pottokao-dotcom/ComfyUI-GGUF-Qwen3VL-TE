@@ -11,6 +11,7 @@ This add-on wraps ComfyUI-GGUF's `gguf_clip_loader`: for `qwen3vl` files it load
 It adds no nodes and does nothing once upstream handles qwen3vl itself.
 """
 import logging
+import os
 import sys
 
 NODE_CLASS_MAPPINGS = {}
@@ -64,8 +65,16 @@ def _make_wrapper(orig, loader_mod):
         if not vsd:
             vsd = loader_mod.gguf_mmproj_loader(path)
         if not vsd:
-            logging.error(f"{TAG} no mmproj found next to '{path}'; Qwen-Image-2.1 will fail with a 12288 shape error.")
-            return sd
+            name = os.path.splitext(os.path.basename(path))[0]
+            strip = getattr(loader_mod, "strip_quant_suffix", None)
+            base = strip(name.lower()) if strip else name
+            raise RuntimeError(
+                f"{TAG} Missing vision tower for '{os.path.basename(path)}'.\n"
+                f"Qwen3-VL GGUF text encoders need their mmproj file. Put an mmproj GGUF whose name "
+                f"contains '{base}' (e.g. 'mmproj-{base}-f16.gguf') in the same folder:\n"
+                f"  {os.path.dirname(path)}\n"
+                f"Don't rename either file - they are matched by name."
+            )
         sd.update(_remap_vision(vsd))
         logging.info(f"{TAG} added {len(vsd)} Qwen3-VL vision tensors from mmproj.")
         return sd
