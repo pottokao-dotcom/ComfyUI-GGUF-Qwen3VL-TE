@@ -29,6 +29,9 @@ It adds no new nodes; keep using your normal workflow. On startup the console sh
 Don't rename them — the mmproj is found by name. If it is missing, loading stops with a
 `Missing vision tower` error that names the file to download.
 
+The text-encoder fix only acts when the loader's type is **`qwen_image`**. Other models that use
+Qwen3-VL GGUFs (e.g. MiniMax-H3 text encoders) load exactly as they do without this add-on.
+
 **DiT** — put any Qwen-Image-2.1 GGUF in `models/diffusion_models/` (or `models/unet/`) and load it with
 `UnetLoaderGGUF` as usual.
 

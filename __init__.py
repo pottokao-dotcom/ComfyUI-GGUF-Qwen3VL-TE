@@ -57,31 +57,40 @@ def _is_vision_key(k):
     return k.startswith(("v.", "visual."))
 
 
-def _make_wrapper(orig, loader_mod):
-    def gguf_clip_loader(path, *args, **kwargs):
-        sd = orig(path, *args, **kwargs)
-        if _DETECT_KEY in sd or _arch(path) != "qwen3vl":
-            return sd
-        # an upstream that loads the mmproj but keeps qwen2vl names: rename in place
-        vsd = {k: sd.pop(k) for k in list(sd) if _is_vision_key(k)}
-        if not vsd:
-            vsd = loader_mod.gguf_mmproj_loader(path)
-        if not vsd:
-            name = os.path.splitext(os.path.basename(path))[0]
-            strip = getattr(loader_mod, "strip_quant_suffix", None)
-            base = strip(name.lower()) if strip else name
-            raise RuntimeError(
-                f"{TAG} Missing vision tower for '{os.path.basename(path)}'.\n"
-                f"Qwen3-VL GGUF text encoders need their mmproj file. Put an mmproj GGUF whose name "
-                f"contains '{base}' (e.g. 'mmproj-{base}-f16.gguf') in the same folder:\n"
-                f"  {os.path.dirname(path)}\n"
-                f"Don't rename either file - they are matched by name."
-            )
-        sd.update(_remap_vision(vsd))
-        logging.info(f"{TAG} added {len(vsd)} Qwen3-VL vision tensors from mmproj.")
-        return sd
-    gguf_clip_loader._qwen3vl_te_patched = True
-    return gguf_clip_loader
+def _add_vision(path, sd, loader_mod):
+    # Give a Qwen3-VL GGUF text encoder the vision tower Qwen-Image-2.1 needs, in ComfyUI's key layout.
+    if _DETECT_KEY in sd or _arch(path) != "qwen3vl":
+        return
+    # vision tensors already in the file (or loaded by an upstream that keeps other names): rename in place
+    vsd = {k: sd.pop(k) for k in list(sd) if _is_vision_key(k)}
+    if not vsd:
+        vsd = loader_mod.gguf_mmproj_loader(path)
+    if not vsd:
+        name = os.path.splitext(os.path.basename(path))[0]
+        strip = getattr(loader_mod, "strip_quant_suffix", None)
+        base = strip(name.lower()) if strip else name
+        raise RuntimeError(
+            f"{TAG} Missing vision tower for '{os.path.basename(path)}'.\n"
+            f"Qwen-Image-2.1 needs the text encoder's mmproj file. Put an mmproj GGUF whose name "
+            f"contains '{base}' (e.g. 'mmproj-{base}-f16.gguf') in the same folder:\n"
+            f"  {os.path.dirname(path)}\n"
+            f"Don't rename either file - they are matched by name."
+        )
+    sd.update(_remap_vision(vsd))
+    logging.info(f"{TAG} added {len(vsd)} Qwen3-VL vision tensors for Qwen-Image-2.1.")
+
+
+def _make_load_patcher(orig, loader_mod):
+    # Act only when the loader's type is qwen_image: other models built on Qwen3-VL GGUFs
+    # (e.g. MiniMax-H3 text encoders) must load exactly as before.
+    def load_patcher(self, clip_paths, clip_type, clip_data, *args, **kwargs):
+        if getattr(clip_type, "name", None) == "QWEN_IMAGE":
+            for path, sd in zip(clip_paths, clip_data):
+                if str(path).endswith(".gguf"):
+                    _add_vision(path, sd, loader_mod)
+        return orig(self, clip_paths, clip_type, clip_data, *args, **kwargs)
+    load_patcher._qwen3vl_te_patched = True
+    return load_patcher
 
 
 # Qwen-Image-2.1 DiT GGUFs without `general.architecture` metadata (stable-diffusion.cpp style,
@@ -146,19 +155,17 @@ def _patch():
     if convert_mod is not None:
         _patch_dit(convert_mod)
 
-    # text encoder
-    orig = loader_mod.gguf_clip_loader
-    if getattr(orig, "_qwen3vl_te_patched", False):
-        return True
-    wrapped = _make_wrapper(orig, loader_mod)
-    loader_mod.gguf_clip_loader = wrapped
-    # nodes.py binds the name with `from .loader import gguf_clip_loader`
+    # text encoder: CLIPLoaderGGUF.load_patcher is where the loader's type is known
+    # (Dual/Triple/Quadruple loaders inherit it)
     nodes_mod = mods.get("nodes")
-    if nodes_mod is not None and nodes_mod.__dict__.get("gguf_clip_loader") is orig:
-        nodes_mod.gguf_clip_loader = wrapped
-        logging.info(f"{TAG} ComfyUI-GGUF patched for Qwen-Image-2.1 (qwen3vl text encoder + DiT detection).")
-    else:
-        logging.warning(f"{TAG} patched ComfyUI-GGUF loader but did not find its nodes module.")
+    cls = nodes_mod.__dict__.get("CLIPLoaderGGUF") if nodes_mod is not None else None
+    if cls is None:
+        logging.warning(f"{TAG} did not find ComfyUI-GGUF's CLIPLoaderGGUF; text encoder fix not applied.")
+        return True
+    orig = cls.load_patcher
+    if not getattr(orig, "_qwen3vl_te_patched", False):
+        cls.load_patcher = _make_load_patcher(orig, loader_mod)
+    logging.info(f"{TAG} ComfyUI-GGUF patched for Qwen-Image-2.1 (qwen_image text encoder + DiT detection).")
     return True
 
 
