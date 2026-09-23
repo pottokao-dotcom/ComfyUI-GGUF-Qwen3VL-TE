@@ -10,9 +10,11 @@ This add-on wraps ComfyUI-GGUF's `gguf_clip_loader`: for `qwen3vl` files it load
 `mmproj-*.gguf` from the same folder and renames its tensors to ComfyUI's Qwen3-VL layout.
 It adds no nodes and does nothing once upstream handles qwen3vl itself.
 """
+import importlib
 import logging
 import os
 import sys
+import types
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
@@ -82,28 +84,81 @@ def _make_wrapper(orig, loader_mod):
     return gguf_clip_loader
 
 
+# Qwen-Image-2.1 DiT GGUFs without `general.architecture` metadata (stable-diffusion.cpp style,
+# e.g. unsloth/leejet) fail with "Unknown model architecture!": ComfyUI-GGUF's key-based
+# detection has no Qwen-Image entry. ComfyUI itself tells 2.1 apart from the state dict later.
+_QI21_DIT_KEYS = ("img_in.weight", "txt_in.in_layer.weight", "txt_in.text_norm.weight")
+
+
+def _find_gguf_modules():
+    # Look only at real module attributes (__dict__): some modules, e.g. torch.ops namespaces,
+    # answer hasattr() for any name.
+    found = {}
+    for m in list(sys.modules.values()):
+        if not isinstance(m, types.ModuleType):
+            continue
+        d = m.__dict__
+        path = (d.get("__file__") or "").replace("\\", "/")
+        if path.endswith("/loader.py") and "gguf_clip_loader" in d and "gguf_mmproj_loader" in d:
+            found["loader"] = m
+        elif path.endswith("/nodes.py") and "gguf_clip_loader" in d and "CLIPLoaderGGUF" in d:
+            found["nodes"] = m
+        elif path.endswith("/tools/convert.py") and "detect_arch" in d and "ModelTemplate" in d:
+            found["convert"] = m
+    return found
+
+
+def _patch_dit(convert_mod):
+    orig = convert_mod.detect_arch
+    if getattr(orig, "_qwen3vl_te_patched", False):
+        return True
+
+    class ModelQwenImage(convert_mod.ModelTemplate):
+        arch = "qwen_image"
+
+    def detect_arch(state_dict):
+        try:
+            return orig(state_dict)
+        except AssertionError:
+            if all(k in state_dict for k in _QI21_DIT_KEYS):
+                logging.info(f"{TAG} detected a Qwen-Image-2.1 DiT GGUF without architecture metadata.")
+                return ModelQwenImage()
+            raise
+
+    detect_arch._qwen3vl_te_patched = True
+    convert_mod.detect_arch = detect_arch
+    return True
+
+
 def _patch():
-    loader_mod = nodes_mods = None
-    mods = [m for m in list(sys.modules.values()) if m is not None]
-    for m in mods:
-        if hasattr(m, "gguf_clip_loader") and hasattr(m, "gguf_mmproj_loader"):
-            loader_mod = m
+    mods = _find_gguf_modules()
+    loader_mod = mods.get("loader")
     if loader_mod is None:
         return False
+
+    # DiT: tools.convert is imported lazily by ComfyUI-GGUF, so import it the same way
+    convert_mod = mods.get("convert")
+    if convert_mod is None:
+        try:
+            convert_mod = importlib.import_module(loader_mod.__package__ + ".tools.convert")
+        except Exception as e:
+            logging.warning(f"{TAG} could not patch DiT architecture detection: {e}")
+    if convert_mod is not None:
+        _patch_dit(convert_mod)
+
+    # text encoder
     orig = loader_mod.gguf_clip_loader
     if getattr(orig, "_qwen3vl_te_patched", False):
         return True
     wrapped = _make_wrapper(orig, loader_mod)
     loader_mod.gguf_clip_loader = wrapped
     # nodes.py binds the name with `from .loader import gguf_clip_loader`
-    for m in mods:
-        if getattr(m, "gguf_clip_loader", None) is orig and hasattr(m, "CLIPLoaderGGUF"):
-            m.gguf_clip_loader = wrapped
-            nodes_mods = m
-    if nodes_mods is None:
-        logging.warning(f"{TAG} patched ComfyUI-GGUF loader but did not find its nodes module.")
+    nodes_mod = mods.get("nodes")
+    if nodes_mod is not None and nodes_mod.__dict__.get("gguf_clip_loader") is orig:
+        nodes_mod.gguf_clip_loader = wrapped
+        logging.info(f"{TAG} ComfyUI-GGUF patched for Qwen-Image-2.1 (qwen3vl text encoder + DiT detection).")
     else:
-        logging.info(f"{TAG} ComfyUI-GGUF patched for qwen3vl text encoders.")
+        logging.warning(f"{TAG} patched ComfyUI-GGUF loader but did not find its nodes module.")
     return True
 
 
