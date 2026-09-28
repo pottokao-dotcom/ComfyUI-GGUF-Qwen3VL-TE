@@ -1,9 +1,9 @@
 """
-Add-on for city96/ComfyUI-GGUF: lets a Qwen3-VL GGUF (e.g. the Qwen-Image-2.1 text encoder)
+Add-on for city96/ComfyUI-GGUF: lets a Qwen3-VL GGUF (the Qwen-Image-2.1, Ideogram 4 or Boogu text encoder)
 load through the stock `CLIPLoaderGGUF` node.
 
 Upstream ComfyUI-GGUF only loads the mmproj vision tower for `qwen2vl`. For `qwen3vl` the
-vision tower is missing, ComfyUI does not recognise the model as Qwen3-VL, and Qwen-Image-2.1
+vision tower is missing, ComfyUI does not recognise the model as Qwen3-VL: Qwen-Image-2.1
 fails with `Given normalized_shape=[4096] ... got input of size [1, 512, 12288]`.
 
 This add-on wraps ComfyUI-GGUF's `gguf_clip_loader`: for `qwen3vl` files it loads the matching
@@ -21,6 +21,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 
 TAG = "[GGUF-Qwen3VL-TE]"
 _DETECT_KEY = "model.visual.deepstack_merger_list.0.norm.weight"
+_TYPES = ("QWEN_IMAGE", "IDEOGRAM4", "BOOGU")   # CLIPType names
 
 
 def _arch(path):
@@ -58,7 +59,7 @@ def _is_vision_key(k):
 
 
 def _add_vision(path, sd, loader_mod):
-    # Give a Qwen3-VL GGUF text encoder the vision tower Qwen-Image-2.1 needs, in ComfyUI's key layout.
+    # Give a Qwen3-VL GGUF text encoder the vision tower ComfyUI needs to detect Qwen3-VL-8B, in its key layout.
     if _DETECT_KEY in sd or _arch(path) != "qwen3vl":
         return
     # vision tensors already in the file (or loaded by an upstream that keeps other names): rename in place
@@ -71,20 +72,21 @@ def _add_vision(path, sd, loader_mod):
         base = strip(name.lower()) if strip else name
         raise RuntimeError(
             f"{TAG} Missing vision tower for '{os.path.basename(path)}'.\n"
-            f"Qwen-Image-2.1 needs the text encoder's mmproj file. Put an mmproj GGUF whose name "
+            f"This text encoder type needs the mmproj file. Put an mmproj GGUF whose name "
             f"contains '{base}' (e.g. 'mmproj-{base}-f16.gguf') in the same folder:\n"
             f"  {os.path.dirname(path)}\n"
             f"Don't rename either file - they are matched by name."
         )
     sd.update(_remap_vision(vsd))
-    logging.info(f"{TAG} added {len(vsd)} Qwen3-VL vision tensors for Qwen-Image-2.1.")
+    logging.info(f"{TAG} added {len(vsd)} Qwen3-VL vision tensors.")
 
 
 def _make_load_patcher(orig, loader_mod):
-    # Act only when the loader's type is qwen_image: other models built on Qwen3-VL GGUFs
-    # (e.g. MiniMax-H3 text encoders) must load exactly as before.
+    # Act only for the types whose ComfyUI text encoder is the full Qwen3-VL-8B: other models built on
+    # Qwen3-VL GGUFs (e.g. MiniMax-H3 text encoders) must load exactly as before. Without the vision tower
+    # ComfyUI sees plain Qwen3-8B: Qwen-Image-2.1 fails, Boogu silently falls back to the klein 9B encoder.
     def load_patcher(self, clip_paths, clip_type, clip_data, *args, **kwargs):
-        if getattr(clip_type, "name", None) == "QWEN_IMAGE":
+        if getattr(clip_type, "name", None) in _TYPES:
             for path, sd in zip(clip_paths, clip_data):
                 if str(path).endswith(".gguf"):
                     _add_vision(path, sd, loader_mod)
@@ -165,7 +167,7 @@ def _patch():
     orig = cls.load_patcher
     if not getattr(orig, "_qwen3vl_te_patched", False):
         cls.load_patcher = _make_load_patcher(orig, loader_mod)
-    logging.info(f"{TAG} ComfyUI-GGUF patched for Qwen-Image-2.1 (qwen_image text encoder + DiT detection).")
+    logging.info(f"{TAG} ComfyUI-GGUF patched (qwen_image / ideogram4 / boogu text encoders + Qwen-Image-2.1 DiT detection).")
     return True
 
 

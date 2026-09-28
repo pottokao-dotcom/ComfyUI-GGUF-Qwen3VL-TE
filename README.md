@@ -1,11 +1,14 @@
 # ComfyUI-GGUF-Qwen3VL-TE
 
 Makes **Qwen-Image-2.1 run fully on GGUF** with [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF),
-until upstream supports it. One add-on, two fixes:
+and lets the **Ideogram 4** and **Boogu** Qwen3-VL-8B text encoders load from GGUF correctly, until upstream
+supports it. One add-on, two fixes:
 
-| Fixes | Error without this add-on |
+| Fixes | What happens without this add-on |
 |---|---|
-| **Text encoder** — Qwen3-VL GGUF via `CLIPLoaderGGUF` | `RuntimeError: Given normalized_shape=[4096] ... got input of size [1, 512, 12288]` |
+| **Text encoder** — Qwen3-VL GGUF via `CLIPLoaderGGUF`, type `qwen_image` | `RuntimeError: Given normalized_shape=[4096] ... got input of size [1, 512, 12288]` |
+| **Text encoder** — same, type `ideogram4` | **no error, wrong conditioning**: loaded as the text-only Qwen3-8B encoder (cos 0.84–0.87 vs bf16) |
+| **Text encoder** — same, type `boogu` | **no error at load, wrong encoder**: loaded as the FLUX.2 klein 9B encoder (512×12288 output) |
 | **DiT** — Qwen-Image-2.1 GGUFs without architecture metadata (e.g. [unsloth](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF), [leejet](https://huggingface.co/leejet/Qwen-Image-2.1-GGUF)) via `UnetLoaderGGUF` | `ValueError: This model is not currently supported - (Unknown model architecture!)` |
 
 ## Install
@@ -17,7 +20,7 @@ git clone https://github.com/pottokao-dotcom/ComfyUI-GGUF-Qwen3VL-TE
 
 Restart ComfyUI. You still need **ComfyUI-GGUF** installed — this is an add-on, not a replacement.
 It adds no new nodes; keep using your normal workflow. On startup the console shows
-`[GGUF-Qwen3VL-TE] ComfyUI-GGUF patched for Qwen-Image-2.1 (qwen3vl text encoder + DiT detection).`
+`[GGUF-Qwen3VL-TE] ComfyUI-GGUF patched (qwen_image / ideogram4 / boogu text encoders + Qwen-Image-2.1 DiT detection).`
 
 ## Usage
 
@@ -29,8 +32,9 @@ It adds no new nodes; keep using your normal workflow. On startup the console sh
 Don't rename them — the mmproj is found by name. If it is missing, loading stops with a
 `Missing vision tower` error that names the file to download.
 
-The text-encoder fix only acts when the loader's type is **`qwen_image`**. Other models that use
-Qwen3-VL GGUFs (e.g. MiniMax-H3 text encoders) load exactly as they do without this add-on.
+The text-encoder fix only acts when the loader's type is **`qwen_image`**, **`ideogram4`** or **`boogu`**
+(the types whose ComfyUI text encoder is the full Qwen3-VL-8B). Other models that use Qwen3-VL GGUFs
+(e.g. MiniMax-H3 text encoders) load exactly as they do without this add-on.
 
 **DiT** — put any Qwen-Image-2.1 GGUF in `models/diffusion_models/` (or `models/unet/`) and load it with
 `UnetLoaderGGUF` as usual.
@@ -68,6 +72,10 @@ ComfyUI 0.36.0 + ComfyUI-GGUF `6ea2651`, NVIDIA GPU:
 - **Text encoder:** all 750 keys match the official bf16 safetensors text encoder, the vision tensors
   match it numerically, and Qwen-Image-2.1 text-to-image and reference-image editing match the bf16
   encoder's output for the same seed up to Q4 quantization noise.
+- **Ideogram 4 / Boogu text encoders** (ComfyUI `1568e6c`): Qwen3-VL-8B Q8_0 GGUF through `CLIPLoaderGGUF` vs the
+  bf16 safetensors through `CLIPLoader`, same prompts: with this add-on the same ComfyUI text encoder is built and
+  the conditioning matches (per-token cos 0.9999 for `ideogram4`, 0.9997 for `boogu`); without it, see the table
+  at the top. `qwen_image` results are unchanged.
 - **DiT:** unsloth, leejet and Abiray Q4 GGUFs are all detected as `qwen_image`; the unsloth Q4_K_M
   (no architecture metadata) generates normally in an all-GGUF pipeline.
 
